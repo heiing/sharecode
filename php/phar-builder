@@ -1,0 +1,176 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Author: https://github.com/heiing
+ * Date: 2015-03-05T13:38+08:00
+ */
+ 
+define("PHAR_BUILDER_VERSION", "0.1.0");
+ 
+function usage($self, $ln = PHP_EOL) {
+    echo "Usage: {$self} phar [options]{$ln}";
+    echo "phar            Path to an existing Phar archive or to-be-created archive.{$ln}";
+    echo "                The file name's extension must contain .phar.{$ln}";
+    echo "options:{$ln}";
+    echo "  --alias       Alias with which this Phar archive{$ln}";
+    echo "                should be referred to in calls to stream functionality.{$ln}";
+    echo "                default value is basename(path).{$ln}";
+    echo "  --path        The full or relative path to the directory{$ln}";
+    echo "                that contains all files to add to the archive.{$ln}";
+    echo "  --filter      An optional pcre regular expression that is used to filter the list of files.{$ln}";
+    echo "                Only file paths matching the regular expression will be included in the archive.{$ln}";
+    echo "  --files       files that add to the archive, seperator is ','{$ln}";
+    echo "  --compress    gz or bz2{$ln}";
+    echo "  --index       Relative path within the phar archive to run if accessed on the command-line{$ln}";
+    echo "  --webindex    Relative path within the phar archive to run if accessed through a web browser{$ln}";
+    echo "  --stub        A string or file path handle to use as the executable stub for this phar archive.{$ln}";
+    echo "{$ln}";
+    exit(1);
+}
+ 
+function error($message, $ln = PHP_EOL) {
+    echo "Error: {$message}{$ln}";
+    exit(1);
+}
+ 
+function info($message, $ln = PHP_EOL) {
+    echo "{$message}{$ln}";
+}
+ 
+/**
+ * 解释参数，可以解释以下类型：
+ *     -p
+ *     -pVALUE
+ *     -p value
+ *     --param value
+ *     -p=value
+ *     --param=value
+ *     param=value
+ * @param array $argv
+ * @return array
+ */
+function args_parse($argv) {
+    if (!is_array($argv) || empty($argv)) {
+        return array();
+    }
+    $argc = count($argv);
+    $ret = array();
+    for ($i = 0; $i < $argc; ++$i) {
+        $arg = $argv[$i];
+        if (strpos($arg, '=') > 0) { // -p=value --param=value param=value
+            list($arg_name, $arg_value) = explode('=', ltrim($arg, '-'), 2);
+            $ret[$arg_name] = $arg_value;
+            continue;
+        }
+        if ($arg{0} !== '-') {
+            continue;
+        }
+        if (($arg{1} !== '-') && isset($arg{2})) {// -pVALUE
+            $ret[$arg{1}] = substr($arg, 2);
+            continue;
+        } else if (isset($argv[$i + 1]) && ($argv[$i + 1]{0} !== '-') && (false === strpos($arg, '='))) {
+            $ret[ltrim($arg, '-')] = $argv[$i + 1];
+            ++$i;
+        } else {
+            $ret[ltrim($arg, '-')] = true;
+        }
+    }
+    return $ret;
+}
+ 
+info("Phar Builder " . PHAR_BUILDER_VERSION);
+ 
+if ('cli' !== PHP_SAPI) {
+    error("Run for command line only.");
+}
+ 
+if (false === Phar::canWrite()) {
+    error("Phar can not write, Set \"phar.readonly = Off\" in php.ini.");
+}
+ 
+$self = array_shift($argv);
+if (empty($argv[0])) {
+    usage($self);
+}
+ 
+$path = array_shift($argv);
+$args = args_parse($argv);
+$stub = empty($args['stub']) ? '' : $args['stub'];
+$flags = 0;
+$files = empty($args['files']) ? '' : $args['files'];
+$alias = empty($args['alias']) ? basename($path) : $args['alias'];
+$regex = empty($args['filter']) ? null : $args['filter'];
+$base_dir = empty($args['path']) ? '' : $args['path'];
+$arg_compress = empty($args['compress']) ? '' : $args['compress'];
+$index = empty($args['index']) ? '' : $args['index'];
+$webindex = empty($args['webindex']) ? '' : $args['webindex'];
+switch ($arg_compress) {
+    case 'gz':
+        $compress = Phar::GZ;
+        $compress_type = 'gz';
+        break;
+    case 'bz2':
+        $compress = Phar::BZ2;
+        $compress_type = 'bz2';
+        break;
+    default :
+        $compress = Phar::NONE;
+        $compress_type = 'none';
+        break;
+}
+ 
+if (!empty($base_dir) && !is_dir($base_dir)) {
+    error("Dir not Exists!");
+}
+ 
+try {
+     
+    $p = new Phar($path, $flags, $alias);
+    $p->startBuffering();
+    $p->compress($compress);
+ 
+    info("API Version: " . Phar::apiVersion());
+    info("File: {$path}");
+    info("Alias: {$alias}");
+    info("Compress: {$compress_type}");
+    if (!empty($base_dir)) {
+        info("Build From: {$base_dir}");
+        if ($regex) {
+            info("Filter: {$regex}");
+        }
+        $p->buildFromDirectory($base_dir, $regex);
+    }
+    if (!empty($files)) {
+        foreach (explode(',', $files) as $file) {
+            info("Add File: {$file}");
+            $p->addFile($file, basename($file));
+        }
+    }
+     
+    if ($index && $webindex) {
+        info("Index: {$index}");
+        info("Web Index: {$webindex}");
+        $p->setDefaultStub($index, $webindex);
+    } else if ($index) {
+        info("Index: {$index}");
+        $p->setDefaultStub($index);
+    } else if ($webindex) {
+        info("Web Index: {$webindex}");
+        $p->setDefaultStub(null, $webindex);
+    }
+     
+    if ($stub) {
+        info("Stub: {$stub}");
+        if (is_file($stub)) {
+            $stub = file_get_contents($stub);
+        }
+        $p->setStub($stub);
+    }
+ 
+    $p->stopBuffering();
+    info("Files: {$p->count()}");
+     
+} catch (\Exception $e) {
+    error($e->getMessage());
+}
