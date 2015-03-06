@@ -1,0 +1,216 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * 随着项目增多，thrift IDL 生成代码的管理也越复杂。
+ * 此工具用于生成 thrift 的代码，尽量使其脚本化，自动化。
+ * 
+ * 使用方法：
+ * ./cthrift cms-exmaple ./cthrift.config.php
+ * 
+ * cthrift.config.php 是个配置文件：
+
+<?php
+
+return array(
+    'thrift_command' => 'thrift --gen {gen} -out "{out}" "{idl}"',
+    'projects' => array(
+        'cms-exmaple' => array(
+            'gen' => 'php',                       // 代码目标语言，用于 thrift 的 --gen 选项
+            'out' => '/path/to/output',           // 代码输出目录，用于 thrift 的 --out 选项
+            'idl_git_url' => 'https://git-url',   // IDL 是否使用了 git 管理，如果设置，则自动 pull，
+                                                  // 例如 https://github.com/my/thrift-idl.git
+            'idl_git_pre' => '/src/master',       // IDL 文件的 git URL 前缀。在本例中：
+                                                  // 假设 idl_git_url 为 https://github.com/my/thrift-idl.git
+                                                  // IDL 路径为 /path/to/cms.thrift，idl_root_path 为 /root/thrift/idl
+                                                  // 则 git 的全路径为 https://github.com/my/thrift-idl/src/master/path/to/cms.thrift
+                                                  // 对应的本地路径为 /root/thrift/idl/path/to/cms.thrift
+            'idl_root_path' => '/path/to/idl',    // IDL 根目录，与 idls 拼接，如果有 git，此目录应当设置为 git 的根目录（含 .git 的目录）
+            'idls' => array(  // IDL 所在的目录或文件
+                '/path/to/idl/1',
+                '/path/to/idl/2',
+            ),
+        ),
+   ),
+);
+
+ *  
+ * Author: https://github.com/heiing
+ * Date: 2015-03-06T11:06+08:00
+ */
+
+define("VERSION", "0.1.0");
+ 
+function usage($self, $ln = PHP_EOL) {
+    echo "Usage: {$self} project-name config-file [idl-git-url]{$ln}";
+    echo "project-name    Project name{$ln}";
+    echo "config-file     Config file path{$ln}";
+    echo "idl-git-url     IDL git url{$ln}";
+    echo "{$ln}";
+    echo "config-file example: {$ln}";
+    echo "<?php{$ln}";
+    echo "{$ln}";
+    echo "return array({$ln}";
+    echo "    'thrift_command' => 'thrift --gen {gen} -out \"{out}\" \"{idl}\"',{$ln}";
+    echo "    'projects' => array({$ln}";
+    echo "        'cms-exmaple' => array({$ln}";
+    echo "            'gen' => 'php',                       // 代码目标语言，用于 thrift 的 --gen 选项{$ln}";
+    echo "            'out' => '/path/to/output',           // 代码输出目录，用于 thrift 的 --out 选项{$ln}";
+    echo "            'idl_git_url' => 'https://git-url',   // IDL 是否使用了 git 管理，如果设置，则自动 pull，{$ln}";
+    echo "                                                  // 例如 https://github.com/my/thrift-idl.git{$ln}";
+    echo "            'idl_git_pre' => '/src/master',       // IDL 文件的 git URL 前缀。在本例中：{$ln}";
+    echo "                                                  // 假设 idl_git_url 为 https://github.com/my/thrift-idl.git{$ln}";
+    echo "                                                  // IDL 路径为 /path/to/cms.thrift，idl_root_path 为 /root/thrift/idl{$ln}";
+    echo "                                                  // 则 git 的全路径为 https://github.com/my/thrift-idl/src/master/path/to/cms.thrift{$ln}";
+    echo "                                                  // 对应的本地路径为 /root/thrift/idl/path/to/cms.thrift{$ln}";
+    echo "            'idl_root_path' => '/path/to/idl',    // IDL 根目录，与 idls 拼接，如果有 git，此目录应当设置为 git 的根目录（含 .git 的目录）{$ln}";
+    echo "            'idls' => array(  // IDL 所在的目录或文件{$ln}";
+    echo "                '/path/to/idl/1',{$ln}";
+    echo "                '/path/to/idl/2',{$ln}";
+    echo "            ),{$ln}";
+    echo "        ),{$ln}";
+    echo "   ),{$ln}";
+    echo ");{$ln}";
+    echo "// -------- end of config-file{$ln}";
+    echo "{$ln}";
+    echo "usage example:{$ln}";
+    echo "1. {$self} cms-example /root/cthrift/config.php{$ln}";
+    echo "2. {$self} cms-example /root/cthrift/config.php https://github.com/my/thrift-idl/src/master/cms.thrift{$ln}";
+    echo "{$ln}";
+    echo "GOOD LUCK{$ln}";
+    echo "{$ln}";
+    exit(1);
+}
+
+function error($message, $ln = PHP_EOL) {
+    echo "Error: {$message}{$ln}";
+    exit(1);
+}
+ 
+function info($message, $ln = PHP_EOL) {
+    echo "{$message}{$ln}";
+}
+
+function config($name, $value = null) {
+    static $pool = array();
+    if ($value === null) {
+        return isset($pool[$name]) ? $pool[$name] : null;
+    }
+    $pool[$name] = $value;
+}
+
+function retend_config($name, $value) {
+    if (!is_array($value) || is_numeric(implode('', array_keys($value)))) {
+        return config($name, $value);
+    }
+    foreach ($value as $n => $v) {
+        retend_config($name . '/' . $n, $v);
+    }
+}
+
+function load_config() {
+    $file = config('/config-file');
+    info('load config: ' . $file);
+    if (!is_file($file)) {
+        error('Config file not exists!');
+    }
+    $configs = include $file;
+    if (!isset($configs['projects'])) {
+        error('Invalid config!');
+    }
+    if (!isset($configs['projects'][config('/project-name')])) {
+        error('Project not set!');
+    }
+    foreach ($configs as $name => $value) {
+        if (!is_array($value)) {
+            config($name, $value);
+        } else {
+            retend_config($name, $value);
+        }
+    }
+}
+
+function do_command($cmd, $argv, $exit_on_error = true) {
+    foreach ($argv as $name => $value) {
+        $cmd = str_replace('{' . $name . '}', $value, $cmd);
+    }
+    info($cmd);
+    $ret = 0;
+    passthru($cmd, $ret);
+    if ($ret !== 0 && $exit_on_error) {
+        error('faild!');
+    }
+    return $ret;
+}
+
+function process_project() {
+    $pre = 'projects/' . config('/project-name');
+    
+    $out = config("{$pre}/out");
+    if (null === ($cmd = config('thrift_command'))) {
+        $cmd = 'thrift --gen {gen} ' . ($out ? '--out {out} ' : '') . ' {idl}';
+    }
+    
+    if (null === ($gen = config("{$pre}/gen"))) {
+        error('gen not set!');
+    }
+    
+    if (null === ($path = config("{$pre}/idl_root_path"))) {
+        error('idl_root_path not set!');
+    }
+    if (!is_dir($path)) {
+        error('idl_root_path not exists!');
+    }
+    $path = rtrim($path, '/\\');
+    
+    $git = rtrim(config("{$pre}/idl_git_url"), '/');
+    if (!empty($git)) {
+        do_command("cd {$path}; git pull;", array(), true);
+    }
+    
+    if (null !== ($url = config('/idl-git-url'))) {
+        $git = (strtolower(substr($git, -4)) === '.git' ? substr($git, 0, -4) : $git) . config("{$pre}/idl_git_pre");
+        if ($git !== substr($url, 0, strlen($git))) {
+            error('Invalid git url!');
+        }
+        $idls = array(substr($url, strlen($git)));
+    } else if (null === ($idls = config("{$pre}/idls")) || empty($idls)) {
+        error('idls not set or empty!');
+    }
+    
+    foreach ($idls as $idl) {
+        $idl = "{$path}{$idl}";
+        if (is_dir($idl)) {
+            $idl_files = glob("{$idl}/*.thrift");
+        } else if (is_file($idl)) {
+            $idl_files = array($idl);
+        } else {
+            info("Not Found: {$idl}");
+            continue;
+        }
+        foreach ($idl_files as $file) {
+            do_command($cmd, array(
+                'gen' => $gen,
+                'out' => $out,
+                'idl' => $file,
+            ), true);
+        }
+    }
+}
+
+function run($argv) {
+    info("Thrift Creator " . VERSION);
+    if (!isset($argv[2])) {
+        usage($argv[0]);
+    }
+    config('/config-file', $argv[2]);
+    config('/project-name', $argv[1]);
+    if (isset($argv[3])) {
+        config('/idl-git-url', $argv[3]);
+    }
+    load_config();
+    process_project();
+    info('DONE.');
+}
+
+run($argv);
