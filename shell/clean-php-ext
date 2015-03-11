@@ -1,0 +1,5 @@
+#!/bin/bash
+ 
+rm -rf acinclude.m4 aclocal.m4 autom4te.cache build/ config.guess config.h config.h.in config.log config.nice
+rm -rf config.status config.sub configure configure.in .deps install-sh libtool ltmain.sh Makefile Makefile.fragments
+rm -rf Makefile.global Makefile.objects missing mkinstalldirs modules run-tests.php
